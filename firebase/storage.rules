@@ -1,0 +1,28 @@
+rules_version = '2';
+
+// Medicine photos only. Health records (second release) go to the family's own Google Drive.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isMember(fid) {
+      return request.auth != null
+        && request.auth.token.firebase.sign_in_provider != 'anonymous'
+        && request.auth.uid in firestore.get(/databases/(default)/documents/families/$(fid)).data.memberUids;
+    }
+
+    function isElder(fid, eid) {
+      return request.auth != null
+        && request.auth.token.get('fid', '') == fid
+        && request.auth.token.get('eid', '') == eid;
+    }
+
+    match /families/{fid}/elders/{eid}/medicines/{file} {
+      allow read: if isMember(fid) || isElder(fid, eid);
+      // The app shrinks photos to about 1024 px before upload.
+      allow create, update: if isMember(fid)
+        && request.resource.size < 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow delete: if isMember(fid);
+    }
+  }
+}

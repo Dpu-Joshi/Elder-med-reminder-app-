@@ -1,0 +1,66 @@
+{
+  "description": "Dose planning cases checked by both firebase/functions (planner.ts) and the Android app (DosePlanner.kt). Both must produce exactly these ids and instants.",
+  "cases": [
+    {
+      "name": "India, two times, unsorted with a duplicate and an invalid entry, bounded by start and end dates",
+      "medicineId": "m1",
+      "timeZone": "Asia/Kolkata",
+      "schedule": { "times": ["20:00", "08:00", "08:00", "25:00"], "startDate": "2026-10-19", "endDate": "2026-10-20", "active": true },
+      "from": "2026-10-18",
+      "to": "2026-10-21",
+      "expected": [
+        { "id": "m1_20261019_0800", "scheduledAt": "2026-10-19T02:30:00Z" },
+        { "id": "m1_20261019_2000", "scheduledAt": "2026-10-19T14:30:00Z" },
+        { "id": "m1_20261020_0800", "scheduledAt": "2026-10-20T02:30:00Z" },
+        { "id": "m1_20261020_2000", "scheduledAt": "2026-10-20T14:30:00Z" }
+      ]
+    },
+    {
+      "name": "Stopped medicine plans nothing",
+      "medicineId": "m0",
+      "timeZone": "Asia/Kolkata",
+      "schedule": { "times": ["08:00"], "startDate": "2026-01-01", "endDate": null, "active": false },
+      "from": "2026-10-19",
+      "to": "2026-10-20",
+      "expected": []
+    },
+    {
+      "name": "India, midnight and 23:59 across a month boundary, no end date",
+      "medicineId": "m2",
+      "timeZone": "Asia/Kolkata",
+      "schedule": { "times": ["23:59", "00:00"], "startDate": "2026-10-31", "endDate": null, "active": true },
+      "from": "2026-10-30",
+      "to": "2026-11-01",
+      "expected": [
+        { "id": "m2_20261031_0000", "scheduledAt": "2026-10-30T18:30:00Z" },
+        { "id": "m2_20261031_2359", "scheduledAt": "2026-10-31T18:29:00Z" },
+        { "id": "m2_20261101_0000", "scheduledAt": "2026-10-31T18:30:00Z" },
+        { "id": "m2_20261101_2359", "scheduledAt": "2026-11-01T18:29:00Z" }
+      ]
+    },
+    {
+      "name": "New York, clocks go back: 01:30 happens twice, the earlier one is used",
+      "medicineId": "m3",
+      "timeZone": "America/New_York",
+      "schedule": { "times": ["01:30", "09:00"], "startDate": "2026-01-01", "endDate": null, "active": true },
+      "from": "2026-11-01",
+      "to": "2026-11-01",
+      "expected": [
+        { "id": "m3_20261101_0130", "scheduledAt": "2026-11-01T05:30:00Z" },
+        { "id": "m3_20261101_0900", "scheduledAt": "2026-11-01T14:00:00Z" }
+      ]
+    },
+    {
+      "name": "New York, clocks go forward: 02:30 does not exist and moves to 03:30",
+      "medicineId": "m4",
+      "timeZone": "America/New_York",
+      "schedule": { "times": ["02:30", "08:00"], "startDate": "2027-01-01", "endDate": null, "active": true },
+      "from": "2027-03-14",
+      "to": "2027-03-14",
+      "expected": [
+        { "id": "m4_20270314_0230", "scheduledAt": "2027-03-14T07:30:00Z" },
+        { "id": "m4_20270314_0800", "scheduledAt": "2027-03-14T12:00:00Z" }
+      ]
+    }
+  ]
+}

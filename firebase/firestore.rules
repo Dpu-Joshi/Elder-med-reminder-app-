@@ -1,0 +1,153 @@
+rules_version = '2';
+
+// Who can touch what:
+//  - Family members sign in with Google and are listed in families/{fid}.memberUids.
+//  - An elder's phone signs in anonymously; pairing gives it custom claims {fid, eid}.
+//  - Families, elders, pairing codes and invites are created only by Cloud Functions.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isGoogleUser() {
+      return signedIn() && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
+    function isMember(fid) {
+      return isGoogleUser()
+        && request.auth.uid in get(/databases/$(database)/documents/families/$(fid)).data.memberUids;
+    }
+
+    function isElder(fid, eid) {
+      return signedIn()
+        && request.auth.token.get('fid', '') == fid
+        && request.auth.token.get('eid', '') == eid;
+    }
+
+    function changed() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      // familyId and codeAttempts are written only by Cloud Functions.
+      allow create: if signedIn() && request.auth.uid == uid
+        && !request.resource.data.keys().hasAny(['familyId', 'codeAttempts']);
+      allow update: if signedIn() && request.auth.uid == uid
+        && !changed().hasAny(['familyId', 'codeAttempts']);
+    }
+
+    match /families/{fid} {
+      allow read: if isMember(fid);
+      // Members can rename the family, reorder who is alerted first, and edit their own name or phone.
+      allow update: if isMember(fid)
+        && changed().hasOnly(['name', 'alertOrder', 'members'])
+        && request.resource.data.memberUids == resource.data.memberUids
+        && request.resource.data.alertOrder.size() == resource.data.memberUids.size()
+        && request.resource.data.alertOrder.toSet() == resource.data.memberUids.toSet();
+
+      match /elders/{eid} {
+        allow read: if isMember(fid) || isElder(fid, eid);
+
+        allow update: if (isMember(fid)
+            && changed().hasOnly(['name', 'nickname', 'language', 'phoneNumber', 'timezone', 'settings', 'callName', 'callNumber'])
+            && validSettings(request.resource.data.get('settings', {})))
+          || (isElder(fid, eid)
+            && changed().hasOnly(['lastCheckInAt', 'silentAlertAt', 'fcmToken', 'consent', 'appVersion', 'device'])
+            && (!changed().hasAny(['lastCheckInAt']) || request.resource.data.lastCheckInAt == request.time)
+            && (!changed().hasAny(['silentAlertAt']) || validSilentAlertAt(request.resource.data.silentAlertAt)));
+
+        match /medicines/{mid} {
+          allow read: if isMember(fid) || isElder(fid, eid);
+          allow create: if isMember(fid)
+            && validMedicine(request.resource.data)
+            && request.resource.data.addedBy == request.auth.uid
+            && request.resource.data.updatedBy == request.auth.uid;
+          allow update: if isMember(fid)
+            && validMedicine(request.resource.data)
+            && request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.addedBy == resource.data.addedBy;
+          allow delete: if isMember(fid);
+        }
+
+        match /doses/{did} {
+          allow read: if isMember(fid) || isElder(fid, eid);
+
+          // The elder's phone confirms or snoozes. It may create the document when the
+          // server has not made it yet (for example after confirming offline).
+          allow create: if isElder(fid, eid)
+            && request.resource.data.keys().hasOnly(
+                 ['medicineId', 'scheduledAt', 'localDate', 'localTime', 'status',
+                  'confirmedAt', 'confirmedBy', 'snoozedAt', 'alertAt', 'alertLevel'])
+            && request.resource.data.medicineId is string
+            && request.resource.data.scheduledAt is timestamp
+            && did == request.resource.data.medicineId + '_'
+                 + request.resource.data.localDate.replace('-', '') + '_'
+                 + request.resource.data.localTime.replace(':', '')
+            && elderDoseState(request.resource.data, null);
+
+          allow update: if (isElder(fid, eid)
+              && changed().hasOnly(['status', 'confirmedAt', 'confirmedBy', 'snoozedAt', 'alertAt'])
+              && elderDoseState(request.resource.data, resource.data))
+            || (isMember(fid)
+              && changed().hasOnly(['status', 'confirmedAt', 'confirmedBy', 'alertAt', 'acknowledgedAt', 'acknowledgedBy'])
+              && familyDoseState());
+        }
+      }
+    }
+
+    // Read by the elder's phone to learn when the family has claimed its code.
+    match /pairingCodes/{code} {
+      allow read: if signedIn() && resource.data.elderUid == request.auth.uid;
+    }
+
+    // familyInvites: Cloud Functions only.
+
+    function validSettings(s) {
+      return s.keys().hasOnly(['alertAfterMinutes', 'escalateAfterMinutes', 'silentAfterHours', 'quietStartHour', 'quietEndHour'])
+        && (!('alertAfterMinutes' in s) || (s.alertAfterMinutes is int && s.alertAfterMinutes >= 10 && s.alertAfterMinutes <= 240))
+        && (!('escalateAfterMinutes' in s) || (s.escalateAfterMinutes is int && s.escalateAfterMinutes >= 15 && s.escalateAfterMinutes <= 480))
+        && (!('silentAfterHours' in s) || (s.silentAfterHours is int && s.silentAfterHours >= 2 && s.silentAfterHours <= 48))
+        && (!('quietStartHour' in s) || (s.quietStartHour is int && s.quietStartHour >= 0 && s.quietStartHour <= 23))
+        && (!('quietEndHour' in s) || (s.quietEndHour is int && s.quietEndHour >= 0 && s.quietEndHour <= 23));
+    }
+
+    // Set by the phone on each check-in to now + silentAfterHours.
+    function validSilentAlertAt(t) {
+      return t is timestamp
+        && t > request.time + duration.value(1, 'h')
+        && t < request.time + duration.value(49, 'h');
+    }
+
+    function validMedicine(m) {
+      return m.name is string && m.name.size() > 0 && m.name.size() <= 80
+        && m.times is list && m.times.size() > 0 && m.times.size() <= 8
+        && m.doseAmount is number && m.doseAmount > 0 && m.doseAmount <= 20
+        && m.doseUnit in ['tablet', 'capsule', 'spoon', 'drops', 'puff', 'injection', 'ml']
+        && m.foodRule in ['before', 'after', 'any']
+        && m.startDate is string && m.startDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && m.active is bool;
+    }
+
+    // Confirm: status confirmed, by the elder, nothing more to alert.
+    // Snooze: alertAt stays as the server set it, so the family is still alerted on time
+    // (on create the phone sends the alertAt it computed).
+    function elderDoseState(d, before) {
+      return (d.status == 'confirmed' && d.confirmedBy == 'elder' && d.confirmedAt is timestamp && d.alertAt == null)
+        || (d.status == 'snoozed' && d.snoozedAt is timestamp
+            && (before == null ? d.alertAt is timestamp : d.alertAt == before.alertAt));
+    }
+
+    // "She took it, I checked": confirmed by this family member.
+    // Call tapped: acknowledged, which stops escalation to the next contact.
+    function familyDoseState() {
+      let d = request.resource.data;
+      return (d.status == 'confirmed_by_family' && d.confirmedBy == request.auth.uid
+              && d.confirmedAt is timestamp && d.alertAt == null)
+        || (d.status == resource.data.status && d.acknowledgedBy == request.auth.uid
+            && d.acknowledgedAt is timestamp && d.alertAt == null);
+    }
+  }
+}

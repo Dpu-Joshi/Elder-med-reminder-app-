@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Camera captures of medicine strips, before they are shrunk and uploaded. -->
+    <cache-path name="photos" path="photos/" />
+</paths>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Working name; check the Play Store for clashes before choosing (Dawa Saathi, Samay Par, Goli Time). -->
+    <string name="app_name">Dawa Saathi</string>
+</resources>
